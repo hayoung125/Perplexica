@@ -51,6 +51,7 @@ type Body = {
   embeddingModel: EmbeddingModel;
 };
 
+// eventEmitter 핸들러: data, end, error
 const handleEmitterEvents = async (
   stream: EventEmitter,
   writer: WritableStreamDefaultWriter,
@@ -127,6 +128,7 @@ const handleEmitterEvents = async (
   });
 };
 
+// 히스토리 저장 핸들러
 const handleHistorySave = async (
   message: Message,
   humanMessageId: string,
@@ -180,6 +182,7 @@ const handleHistorySave = async (
   }
 };
 
+// POST 요청을 처리하는 API 핸들러 함수: 사용자의 메시지를 받아 AI 모델로 처리하고 스트림 형태로 응답을 반환
 export const POST = async (req: Request) => {
   try {
     const body = (await req.json()) as Body;
@@ -193,7 +196,7 @@ export const POST = async (req: Request) => {
         { status: 400 },
       );
     }
-
+    
     const [chatModelProviders, embeddingModelProviders] = await Promise.all([
       getAvailableChatModelProviders(),
       getAvailableEmbeddingModelProviders(),
@@ -244,10 +247,13 @@ export const POST = async (req: Request) => {
       );
     }
 
+    // 사용자 메시지와 AI 응답을 위한 고유 ID 생성
+    // 사용자 메시지 ID가 이미 있으면 사용, 없으면 새로 생성
     const humanMessageId =
       message.messageId ?? crypto.randomBytes(7).toString('hex');
     const aiMessageId = crypto.randomBytes(7).toString('hex');
 
+    // 히스토리를 LangChain 형식으로 변환
     const history: BaseMessage[] = body.history.map((msg) => {
       if (msg[0] === 'human') {
         return new HumanMessage({
@@ -260,6 +266,7 @@ export const POST = async (req: Request) => {
       }
     });
 
+    // 요청의 focusMode에 해당하는 검색 핸들러 선택
     const handler = searchHandlers[body.focusMode];
 
     if (!handler) {
@@ -271,22 +278,27 @@ export const POST = async (req: Request) => {
       );
     }
 
+    // 선택된 핸들러를 사용하여 검색 및 응답 스트림 생성
     const stream = await handler.searchAndAnswer(
-      message.content,
-      history,
-      llm,
-      embedding,
-      body.optimizationMode,
-      body.files,
+      message.content,      // 사용자 메시지 내용
+      history,              // 대화 기록
+      llm,                  // 선택된 언어 모델
+      embedding,            // 선택된 임베딩 모델
+      body.optimizationMode, // 최적화 모드
+      body.files,           // 첨부 파일
     );
 
+    // 응답을 위한 스트림 설정
     const responseStream = new TransformStream();
     const writer = responseStream.writable.getWriter();
     const encoder = new TextEncoder();
 
+    // eventEmitter 핸들러를 사용하여 이벤트 처리
     handleEmitterEvents(stream, writer, encoder, aiMessageId, message.chatId);
+    // 히스토리 저장
     handleHistorySave(message, humanMessageId, body.focusMode, body.files);
 
+    // 스트림 형태로 응답 반환
     return new Response(responseStream.readable, {
       headers: {
         'Content-Type': 'text/event-stream',
