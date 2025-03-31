@@ -305,7 +305,6 @@ class MetaSearchAgent implements MetaSearchAgentType {
             embeddings,
             optimizationMode,
           );
-
           return sortedDocs;
         })
           .withConfig({
@@ -325,27 +324,47 @@ class MetaSearchAgent implements MetaSearchAgentType {
     });
   }
 
-  private async rerankDocs(
+  /**
+ * 문서를 쿼리와의 관련성에 따라 재정렬하는 함수
+ * 
+ * 이 함수는 검색된 문서와 파일 ID를 바탕으로 쿼리와의 유사도를 계산하고,
+ * 가장 관련성이 높은 문서들을 반환합니다. 최적화 모드에 따라 처리 속도와 정확도의 
+ * 균형을 조절할 수 있습니다.
+ * 
+ * @param query - 사용자의 검색 쿼리 문자열
+ * @param docs - 검색된 문서 배열
+ * @param fileIds - 참조할 파일 ID 배열
+ * @param embeddings - 텍스트를 벡터로 변환하는 임베딩 모델
+ * @param optimizationMode - 처리 최적화 모드 ('speed': 속도 우선, 'balanced': 균형, 'quality': 품질 우선)
+ * @returns 재정렬된 문서 배열
+ */
+private async rerankDocs(
     query: string,
     docs: Document[],
     fileIds: string[],
     embeddings: Embeddings,
     optimizationMode: 'speed' | 'balanced' | 'quality',
   ) {
+    // 문서와 파일이 모두 없는 경우 빈 문서 배열 반환
     if (docs.length === 0 && fileIds.length === 0) {
       return docs;
     }
 
+    // 파일 ID를 사용하여 파일 데이터 로드 및 처리
     const filesData = fileIds
       .map((file) => {
+        // 파일 경로 구성
         const filePath = path.join(process.cwd(), 'uploads', file);
 
+        // 추출된 내용과 임베딩 파일 경로
         const contentPath = filePath + '-extracted.json';
         const embeddingsPath = filePath + '-embeddings.json';
 
+        // 파일 내용과 임베딩 데이터 로드
         const content = JSON.parse(fs.readFileSync(contentPath, 'utf8'));
         const embeddings = JSON.parse(fs.readFileSync(embeddingsPath, 'utf8'));
 
+        // 파일 내용과 임베딩을 결합하여 검색 가능한 객체 배열 생성
         const fileSimilaritySearchObject = content.contents.map(
           (c: string, i: number) => {
             return {
@@ -358,22 +377,28 @@ class MetaSearchAgent implements MetaSearchAgentType {
 
         return fileSimilaritySearchObject;
       })
-      .flat();
+      .flat(); // 모든 파일 데이터를 하나의 배열로 평탄화
 
+    // 쿼리가 'summarize'인 경우 추가 처리 없이 상위 15개 문서 반환
     if (query.toLocaleLowerCase() === 'summarize') {
       return docs.slice(0, 15);
     }
 
+    // 실제 내용이 있는 문서만 필터링
     const docsWithContent = docs.filter(
       (doc) => doc.pageContent && doc.pageContent.length > 0,
     );
 
+    // 속도 우선 모드 또는 재정렬 기능이 비활성화된 경우
     if (optimizationMode === 'speed' || this.config.rerank === false) {
+      // 참조할 파일이 있는 경우
       if (filesData.length > 0) {
+        // 쿼리를 임베딩 벡터로 변환
         const [queryEmbedding] = await Promise.all([
           embeddings.embedQuery(query),
         ]);
 
+        // 파일 데이터를 Document 객체로 변환
         const fileDocs = filesData.map((fileData) => {
           return new Document({
             pageContent: fileData.content,
@@ -384,6 +409,7 @@ class MetaSearchAgent implements MetaSearchAgentType {
           });
         });
 
+        // 파일 데이터의 임베딩과 쿼리 임베딩 간의 유사도 계산
         const similarity = filesData.map((fileData, i) => {
           const sim = computeSimilarity(queryEmbedding, fileData.embeddings);
 
@@ -393,25 +419,32 @@ class MetaSearchAgent implements MetaSearchAgentType {
           };
         });
 
+        // 유사도에 따라 문서 정렬 및 필터링
         let sortedDocs = similarity
           .filter(
             (sim) => sim.similarity > (this.config.rerankThreshold ?? 0.3),
-          )
-          .sort((a, b) => b.similarity - a.similarity)
-          .slice(0, 15)
-          .map((sim) => fileDocs[sim.index]);
+          ) // 임계값보다 높은 유사도를 가진 문서만 선택
+          .sort((a, b) => b.similarity - a.similarity) // 유사도 내림차순 정렬
+          .slice(0, 15) // 상위 15개 선택
+          .map((sim) => fileDocs[sim.index]); // 해당 인덱스의 문서 매핑
 
+        // 웹 검색 결과가 있으면 파일 문서 수를 제한
         sortedDocs =
           docsWithContent.length > 0 ? sortedDocs.slice(0, 8) : sortedDocs;
 
+        // 파일 문서와 웹 검색 결과 결합 (총 15개 문서까지)
         return [
           ...sortedDocs,
           ...docsWithContent.slice(0, 15 - sortedDocs.length),
         ];
       } else {
+        // 파일이 없는 경우 웹 검색 결과만 반환 (최대 15개)
         return docsWithContent.slice(0, 15);
       }
-    } else if (optimizationMode === 'balanced') {
+    } 
+    // 균형 모드인 경우
+    else if (optimizationMode === 'balanced') {
+      // 문서 내용과 쿼리를 동시에 임베딩 벡터로 변환
       const [docEmbeddings, queryEmbedding] = await Promise.all([
         embeddings.embedDocuments(
           docsWithContent.map((doc) => doc.pageContent),
@@ -419,6 +452,7 @@ class MetaSearchAgent implements MetaSearchAgentType {
         embeddings.embedQuery(query),
       ]);
 
+      // 파일 데이터를 Document 객체로 변환하여 문서 배열에 추가
       docsWithContent.push(
         ...filesData.map((fileData) => {
           return new Document({
@@ -431,8 +465,10 @@ class MetaSearchAgent implements MetaSearchAgentType {
         }),
       );
 
+      // 파일 임베딩을 문서 임베딩 배열에 추가
       docEmbeddings.push(...filesData.map((fileData) => fileData.embeddings));
 
+      // 모든 문서의 임베딩과 쿼리 임베딩 간의 유사도 계산
       const similarity = docEmbeddings.map((docEmbedding, i) => {
         const sim = computeSimilarity(queryEmbedding, docEmbedding);
 
@@ -442,55 +478,89 @@ class MetaSearchAgent implements MetaSearchAgentType {
         };
       });
 
+      // 유사도에 따라 문서 정렬 및 필터링
       const sortedDocs = similarity
-        .filter((sim) => sim.similarity > (this.config.rerankThreshold ?? 0.3))
-        .sort((a, b) => b.similarity - a.similarity)
-        .slice(0, 15)
-        .map((sim) => docsWithContent[sim.index]);
+        .filter((sim) => sim.similarity > (this.config.rerankThreshold ?? 0.3)) // 임계값보다 높은 유사도를 가진 문서만 선택
+        .sort((a, b) => b.similarity - a.similarity) // 유사도 내림차순 정렬
+        .slice(0, 15) // 상위 15개 선택
+        .map((sim) => docsWithContent[sim.index]); // 해당 인덱스의 문서 매핑
 
       return sortedDocs;
     }
 
+    // 지원되지 않는 최적화 모드의 경우 빈 배열 반환
     return [];
   }
 
+  /**
+   * 문서 배열을 텍스트 형식으로 처리하는 함수
+   * 
+   * 이 함수는 Document 객체 배열을 받아 번호가 매겨진 텍스트 문자열로 변환합니다.
+   * 각 문서는 순차적인 번호, 문서 제목, 그리고 문서 내용이 포함된 형태로 변환됩니다.
+   * 모든 문서가 하나의 문자열로 결합되어 반환됩니다.
+   * 
+   * @param docs - 처리할 Document 객체 배열
+   * @returns 번호가 매겨진 형식으로 결합된 문서 내용 문자열
+   */
   private processDocs(docs: Document[]) {
+    // 각 문서를 번호가 매겨진 형식으로 변환하고 결합
     return docs
       .map(
+        // 문서 인덱스, 제목, 내용을 결합하여 형식화
         (_, index) =>
           `${index + 1}. ${docs[index].metadata.title} ${docs[index].pageContent}`,
       )
-      .join('\n');
+      .join('\n'); // 각 문서를 줄바꿈으로 구분하여 하나의 문자열로 결합
   }
 
+  /**
+   * 스트림 이벤트를 처리하고 이벤트 이미터를 통해 데이터를 전송하는 함수
+   * 
+   * 이 함수는 비동기 제너레이터로부터 생성되는 스트림 이벤트를 처리하고,
+   * 이벤트 유형에 따라 적절한 데이터를 이벤트 이미터를 통해 클라이언트에 전송합니다.
+   * 주로 검색 결과와 AI 응답을 실시간으로 스트리밍하는 데 사용됩니다.
+   * 
+   * @param stream - 처리할 스트림 이벤트의 비동기 제너레이터
+   * @param emitter - 이벤트를 발생시키는 이벤트 이미터 객체
+   */
   private async handleStream(
     stream: AsyncGenerator<StreamEvent, any, any>,
     emitter: eventEmitter,
   ) {
+    // 스트림의 각 이벤트를 순차적으로 처리
     for await (const event of stream) {
+      // 소스 검색 체인이 완료되었을 때 (검색 결과가 준비됨)
       if (
         event.event === 'on_chain_end' &&
         event.name === 'FinalSourceRetriever'
       ) {
+        // 빈 문자열 (오타 또는 잔여 코드로 보임)
         ``;
+        // 검색된 소스 데이터를 JSON 형식으로 변환하여 'data' 이벤트로 전송
         emitter.emit(
           'data',
           JSON.stringify({ type: 'sources', data: event.data.output }),
         );
       }
+      
+      // AI 응답이 생성되는 동안 (실시간 텍스트 청크)
       if (
         event.event === 'on_chain_stream' &&
         event.name === 'FinalResponseGenerator'
       ) {
+        // 생성된 텍스트 청크를 JSON 형식으로 변환하여 'data' 이벤트로 전송
         emitter.emit(
           'data',
           JSON.stringify({ type: 'response', data: event.data.chunk }),
         );
       }
+      
+      // AI 응답 생성이 완료되었을 때
       if (
         event.event === 'on_chain_end' &&
         event.name === 'FinalResponseGenerator'
       ) {
+        // 모든 처리가 완료되었음을 나타내는 'end' 이벤트 발생
         emitter.emit('end');
       }
     }
