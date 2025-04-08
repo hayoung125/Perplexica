@@ -574,6 +574,7 @@ private async rerankDocs(
     optimizationMode: 'speed' | 'balanced' | 'quality',
     fileIds: string[],
   ) {
+    console.log("Searching and answering...");
     const emitter = new eventEmitter();
 
     const answeringChain = await this.createAnsweringChain(
